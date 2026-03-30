@@ -1,0 +1,102 @@
+# ==========================================================================
+# Trading System — Default Configuration
+# ==========================================================================
+# All parameters here can be overridden at runtime via the dashboard.
+# Changes are persisted to config_history in the database.
+
+# ---------- General ----------
+general:
+  paper_mode: true                   # Default to paper trading on first launch
+  phase: EVAL                        # EVAL or PA
+  trading_hours_start: "09:30"       # ET
+  trading_hours_end: "16:00"         # ET
+  signal_expiration_seconds: 10
+  max_concurrent_positions: 2
+  disconnect_flatten_threshold_seconds: 30
+
+# ---------- Instruments ----------
+instruments:
+  - ES
+  - MES
+  - NQ
+  - MNQ
+
+# ---------- Apex Rules (non-overridable guardrails) ----------
+apex_rules:
+  eval:
+    max_drawdown: 3000
+    max_contracts: 8
+  pa:
+    max_contracts: 6
+    safety_net_balance: 103100
+    negative_pnl_ratio: 0.30         # 30% rule
+    max_sl_tp_ratio: 5.0             # 5:1 SL-to-TP ceiling
+
+# ---------- Strategies ----------
+strategies:
+  vwap_reversion:
+    enabled: true
+    sd_multiplier: 2.0
+    min_deviation_distance: 2.0      # minimum points from VWAP
+    reversion_method: "rejection_candle"  # rejection_candle | delta_shift
+    tp_target: "vwap"               # vwap | fixed_distance
+    tp_fixed_distance: 4.0          # points, used if tp_target=fixed_distance
+    sl_buffer: 1.0                  # points beyond deviation extreme
+
+  ema_crossover:
+    enabled: true
+    fast_period: 9
+    slow_period: 21
+    volume_multiplier: 1.5
+    volume_lookback: 20
+    timeframe_minutes: 5
+    rr_multiple: 2.0                # R:R multiple of SL distance
+
+  opening_range:
+    enabled: true
+    range_duration_minutes: 15
+    volume_threshold: 1.5           # multiple of average volume
+    extension_multiplier: 1.0       # TP = range_width * this
+    sl_method: "midpoint"           # midpoint | opposite_boundary
+
+# ---------- Confluence Filters ----------
+filters:
+  order_flow:
+    enabled: true
+    delta_threshold: 0.6            # minimum directional delta ratio
+    weight: 0.25                    # weight in confidence score
+
+  market_profile:
+    enabled: true
+    vah_val_lookback_days: 5
+    weight: 0.25
+
+  support_resistance:
+    enabled: true
+    level_proximity_points: 3.0     # how close price must be to a level
+    weight: 0.25
+
+# ---------- Risk / R:R ----------
+risk:
+  base_rr_ratio: 2.0
+  min_rr_ratio: 1.5
+  max_rr_ratio: 5.0
+  confidence_rr_scale: 0.5         # how much confidence shifts R:R
+
+# ---------- Circuit Breakers ----------
+circuit_breakers:
+  max_consecutive_losses: 3
+  max_daily_loss: 1500              # must be < apex max_drawdown
+  max_daily_profit: 5000            # lock in gains
+  enabled: true
+
+# ---------- News / Events ----------
+news:
+  buffer_before_minutes: 5
+  buffer_after_minutes: 5
+  suppress_on_high_impact: true
+
+# ---------- Sound Alerts ----------
+alerts:
+  sound_enabled: true
+  sound_file: "alert.mp3"
