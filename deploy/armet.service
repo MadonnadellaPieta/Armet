@@ -1,0 +1,34 @@
+[Unit]
+Description=Armet Futures Trading Signal System
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=armet
+Group=armet
+WorkingDirectory=/opt/armet
+EnvironmentFile=/opt/armet/.env
+
+# Run migrations then start the server
+ExecStartPre=/opt/armet/venv/bin/alembic upgrade head
+ExecStart=/opt/armet/venv/bin/uvicorn backend.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 1
+
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/armet/data
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=armet
+
+[Install]
+WantedBy=multi-user.target

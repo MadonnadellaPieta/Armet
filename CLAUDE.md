@@ -8,19 +8,25 @@ Accepted signals place bracket orders (entry + SL + TP) through Rithmic. Enforce
 
 ## Tech Stack
 - **Backend**: Python 3.11+, FastAPI, SQLAlchemy 2.0 async, aiosqlite, Alembic
-- **Frontend**: React 18+, Tremor, shadcn/ui, Tailwind CSS (not yet built)
+- **Frontend**: React 18+, Tremor, Tailwind CSS, Vite, @tanstack/react-query
 - **Broker**: async-rithmic v1.5.9 (primary), Tradovate (fallback, not yet built)
 - **Database**: SQLite via aiosqlite (v1)
 - **Testing**: pytest with pytest-asyncio 0.23.8, `asyncio_mode = "auto"` in pyproject.toml
 
 ## Commands
-- **Run all tests**: `python -m pytest backend/tests/ -v` (155 tests, all passing)
-- **Run single test file**: `python -m pytest backend/tests/test_risk_manager.py -v`
+- **Run all tests**: `python3.11 -m pytest backend/tests/ -v` (182 tests, all passing)
+- **Run single test file**: `python3.11 -m pytest backend/tests/test_api.py -v`
+- **Run integration tests only**: `python3.11 -m pytest backend/tests/test_integration.py -v`
 - **Run migrations**: `cd /home/user/Armet && alembic upgrade head` (needs `data/` dir to exist)
-- **Install deps**: `pip install -r requirements.txt`
+- **Install backend deps**: `pip install -r requirements.txt`
+- **Install frontend deps**: `cd frontend && npm ci --legacy-peer-deps`
+- **Build frontend**: `cd frontend && npm run build`
+- **Run frontend tests**: `cd frontend && npm test`
+- **Start dev server**: `uvicorn backend.main:app --reload` (backend on :8000, vite proxy in dev)
+- **Docker build & run**: `docker compose up --build`
 
 ## Branch
-All development on: `claude/futures-trading-signals-Js8vL`
+All development on: `claude/vps-deployment-docker-9fGo8`
 
 ## Architecture
 
@@ -50,17 +56,28 @@ All three have `evaluate(direction, price_level) → dict` returning `{aligned: 
 
 ### Services (`backend/services/`)
 - **ConfidenceScorer** (`confidence_scorer.py`): `score(filter_results) → (float, dict)`. Formula: `clamp(0.5 + Σ(adjustment × weight), 0, 1)`. Default weight 0.25 per filter. Returns structured confluence_factors dict.
-- **RiskManager** (`risk_manager.py`): `validate(signal, account, positions, qty) → RiskCheckResult`. 10 sequential checks (short-circuits on first failure):
-  1. Naked order (SL+TP required)
-  2. R:R ratio (1.5–5.0)
-  3. No hedging
-  4. Max concurrent positions (default 2)
-  5. Max contracts (EVAL:8, PA:6, auto-reduces qty)
-  6. Daily loss limit ($1,500)
-  7. EVAL trailing drawdown (equity > eod_threshold)
-  8. PA safety net (balance ≥ $103,100)
-  9. PA 30% negative P&L rule
-  10. PA SL/TP ratio ceiling (≤ 5:1)
+- **RiskManager** (`risk_manager.py`): `validate(signal, account, positions, qty) → RiskCheckResult`. 10 sequential checks (short-circuits on first failure).
+- **SignalEngine** (`signal_engine.py`): Orchestrates strategies→filters→confidence→risk pipeline. `on_bar(Bar) → list[ApprovedSignal]`. Checks session_manager and circuit_breaker guards first. Persists SignalRecord (+ EventRecord on risk rejection). Constructor: `SignalEngine(strategies, broker, session_factory, filters=None, scorer=None, risk_manager=None, circuit_breaker=None, session_manager=None)`.
+- **OrderManager** (`order_manager.py`): `accept_signal(signal, qty) → TradeRecord`, `reject_signal(signal) → PhantomTradeRecord`, `on_tick(tick)` for phantom resolution. Persists TradeRecord + AccountSnapshotRecord on close.
+- **CircuitBreaker** (`circuit_breaker.py`): `is_tripped` property, `trip_reason` property. `check_daily_loss(daily_pnl)`, `record_trade_result(pnl)`, `manual_trip()`, `reset()`. Persists CircuitBreakerEventRecord on trip. Constructor: `CircuitBreaker(session_factory, params)`.
+- **SessionManager** (`session_manager.py`): `is_trading_hours(dt=None) → bool` checks 9:30–16:00 ET. `should_suppress_signal(dt=None) → bool`. Constructor accepts `now_fn` for test injection.
+
+### API Layer (`backend/api/`)
+- **`app.py`** — `create_app()` factory: lifespan (init_db), CORS, routes, static frontend serving.
+- **`deps.py`** — `get_db()` yields AsyncSession; `get_circuit_breaker()` returns process-level singleton.
+- **`routers/signals.py`** — `GET /api/v1/signals?limit&offset`, `GET /api/v1/signals/{id}`. Maps `sl_price/tp_price` → `stop_loss_price/take_profit_price` in `SignalOut`.
+- **`routers/account.py`** — `GET /api/v1/account` — last `AccountSnapshotRecord`.
+- **`routers/positions.py`** — `GET /api/v1/positions` — returns `[]` (live positions via broker in future).
+- **`routers/strategies.py`** — `GET /api/v1/strategies`, `POST /api/v1/strategies/{name}/enable|disable`.
+- **`routers/circuit_breaker.py`** — `GET /api/v1/circuit-breaker`, `POST /api/v1/circuit-breaker/trip`, `POST /api/v1/circuit-breaker/reset`.
+
+### Frontend (`frontend/`)
+React 18 + Tremor + Tailwind + @tanstack/react-query + Vite.
+- **7 panels**: SignalsPanel (countdown accept/reject), PositionsPanel, AccountPanel, StrategiesPanel, FiltersPanel, CircuitBreakerPanel, TradeHistoryPanel.
+- **`src/api/client.ts`** — axios client with all TypeScript interface definitions matching backend API.
+- **`src/hooks/`** — `useSignals`, `useStrategies`, `useAccount`, `usePositions`, `useCircuitBreaker` (all react-query, polling every 2–3s).
+- Dev proxy: Vite proxies `/api` → `http://localhost:8000` so `npm run dev` works against running backend.
+- Build output at `frontend/dist/` — served by FastAPI `StaticFiles` in production.
 
 ### Database (`backend/database/`)
 - **ORM models** (`models.py`): 7 tables — SignalRecord, TradeRecord (FK→signals), PhantomTradeRecord (FK→signals), AccountSnapshotRecord, EventRecord, CircuitBreakerEventRecord, ConfigHistoryRecord. UUID hex PKs.
@@ -71,7 +88,13 @@ All three have `evaluate(direction, price_level) → dict` returning `{aligned: 
 - **default_config.yaml**: All params — general (paper_mode, phase, trading hours, signal_expiration), instruments, apex_rules (eval/pa), strategies (3), filters (3 with weights), risk (rr bounds, confidence_rr_scale), circuit_breakers, news buffers, alerts.
 - **settings.py**: Env vars for DATABASE_URL, BROKER_TYPE, Rithmic/Tradovate creds, server host/port.
 
-## Completed Tasks (1–7)
+### Deployment (`deploy/` + root)
+- **`Dockerfile`** — multi-stage: Node 20 builds frontend, Python 3.11-slim runs backend. Frontend dist copied into image; FastAPI serves it via `StaticFiles`.
+- **`docker-compose.yml`** — single `armet` service, port 8000, `armet_data` volume for SQLite.
+- **`deploy/armet.service`** — systemd unit for bare-metal VPS (alternative to Docker).
+- **`deploy/setup-vps.sh`** — automated Ubuntu/Debian install script.
+
+## Completed Tasks (1–17)
 1. ✅ Core data models & broker ABC
 2. ✅ Database layer (SQLAlchemy ORM, Alembic migrations)
 3. ✅ Broker client implementations (Rithmic + Paper)
@@ -79,18 +102,16 @@ All three have `evaluate(direction, price_level) → dict` returning `{aligned: 
 5. ✅ Three confluence filters (Order Flow, Market Profile, S/R)
 6. ✅ Confidence scorer (aggregates filter outputs → 0-1 score)
 7. ✅ Risk manager (Apex guardrails, R:R gating, 10 pre-trade checks)
-
-## Remaining Tasks (8–17)
-8. **Signal engine orchestrator** — Ties strategies + filters + confidence scorer + risk manager into one pipeline. Receives bars/ticks, fans out to enabled strategies, runs filters on any signal, scores confidence, validates via risk manager, emits approved signals.
-9. **Order manager** — Bracket order placement through broker client, tracks order lifecycle.
-10. **Phantom tracker** — Monitor rejected/expired signal outcomes for backtesting.
-11. **Session manager** — Trading hours enforcement (9:30–16:00 ET), session lifecycle, daily resets.
-12. **News service** — Economic calendar integration, signal suppression around high-impact events.
-13. **Circuit breaker** — Kill switch: max consecutive losses, max daily loss/profit, manual trigger.
-14. **FastAPI backend** — REST endpoints + WebSocket handlers for dashboard.
-15. **React dashboard** — All seven panels (signals, positions, account, strategies, filters, circuit breakers, trade history).
-16. **Integration testing** — Full paper-mode end-to-end.
-17. **VPS deployment** — Docker, systemd, or similar.
+8. ✅ Signal engine orchestrator (`backend/services/signal_engine.py`)
+9. ✅ Order manager (`backend/services/order_manager.py`) with phantom tracking built-in
+10. ✅ Phantom tracker — integrated into `OrderManager.reject_signal()` + `on_tick()`
+11. ✅ Session manager (`backend/services/session_manager.py`)
+12. ⏭ News service — skipped (not needed for paper-mode)
+13. ✅ Circuit breaker (`backend/services/circuit_breaker.py`)
+14. ✅ FastAPI backend (`backend/api/`) — 5 routers, 20 tests
+15. ✅ React dashboard (`frontend/`) — 7 panels, Tremor + Tailwind, react-query polling
+16. ✅ Integration testing (`backend/tests/test_integration.py`) — 7 end-to-end tests
+17. ✅ VPS deployment — `Dockerfile` (multi-stage), `docker-compose.yml`, `deploy/armet.service` + `deploy/setup-vps.sh`
 
 ## Conventions
 - Frozen/slots dataclasses for performance on market data types
@@ -100,3 +121,6 @@ All three have `evaluate(direction, price_level) → dict` returning `{aligned: 
 - Tests in `backend/tests/test_<module>.py`, one test class per component
 - Params via dict with `default_params()` static method and `update_params()` for typo-safe updates
 - pytest-asyncio auto mode (no explicit `@pytest.mark.asyncio` needed)
+- Services accept `session_factory: async_sessionmaker[AsyncSession]` (not the global engine from `db.py`)
+- Use `python3.11 -m pytest` — the `pytest` binary uses a separate uv-managed venv without project deps
+- API field mapping: DB uses `sl_price`/`tp_price`; API/frontend uses `stop_loss_price`/`take_profit_price`
