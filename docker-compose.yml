@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  armet:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: armet-trading:latest
+    container_name: armet
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist SQLite database across restarts
+      - armet_data:/app/data
+    environment:
+      # Override any of these in a .env file or via docker-compose --env-file
+      DATABASE_URL: "sqlite+aiosqlite:////app/data/trading.db"
+      BROKER_TYPE: "paper"          # paper | rithmic
+      LOG_LEVEL: "INFO"
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      # Rithmic credentials (only needed when BROKER_TYPE=rithmic)
+      # RITHMIC_USER: ""
+      # RITHMIC_PASSWORD: ""
+      # RITHMIC_SYSTEM: "Rithmic Paper Trading"
+      # RITHMIC_SERVER: ""
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  armet_data:
+    driver: local
